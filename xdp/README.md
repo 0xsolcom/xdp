@@ -1,13 +1,16 @@
 # xdp（XDP / Doppler Finance on Base 交易量采集与排行榜）
 
-抓取 **Base** 链上 **XDP（Doppler Finance，`0x07b3d902783c3c12b077508c3b5c00113d1291d0`）**
-的买卖成交记录，写入 MySQL 做钱包维度汇总，并提供排行榜页面。
-结构、口径、运维方式对齐仓库里的 `bank/`（OKX DEX 采集 + 排行榜），针对 Base/XDP 做了适配。
+采集 **Base** 链上 **XDP（Doppler Finance，`0x07b3d902783c3c12b077508c3b5c00113d1291d0`）**
+的成交记录，写入 MySQL 做钱包维度汇总，并驱动单文件排行榜看板。
+
+> 本文件是**采集器的细节展开版**。整套项目（批量交易 + 采集 + 看板）的完整手册在
+> [仓库根 README](../README.md) —— 命令与参数、数据口径与判据、部署运维、踩坑记录、安全清单。
+> 这里只讲采集端自身。
 
 - 链：Base（`CHAIN_INDEX=8453`，原生币 ETH，浏览器 basescan.org）
 - 代币：`0x07b3d902783c3c12b077508c3b5c00113d1291d0`
-- 数据源：OKX DEX 成交接口 `/api/v6/dex/market/trades`（HMAC 签名）
-- 运行环境：Node.js 18+（ESM，已在 v24 实测）
+- 数据源：**三级** —— 链上直采（newHeads WSS，主力）/ 成交 WebSocket / OKX REST（默认关，省额度）
+- 运行环境：Node.js 18+（ESM）。⚠️ **链上 WSS 依赖 Node 22+**；服务器是 Node 16 时靠 `ws` 包回退
 
 ## 活动信息（来自 OKX 官方接口，非猜测）
 
@@ -27,16 +30,20 @@
 **口径结论（已实测验证）**：官方 Boost 交易量 = **经 OKX DEX 路由**的成交额，
 所以本项目 `REQUIRE_OKX_ROUTE=1`。验证方法见下方「官方榜对账」。
 
-**另一条同样重要的结论 —— 官方榜只收录「已报名」钱包：**
+**另一条结论 —— 官方榜只收录「已报名」钱包，但那份名单拿不到全量：**
 
-实测证据：官方榜**尾部有钱包交易量是 $0.00**，说明官方**没有交易量门槛**；
-而本地一个交易量 $42,924 的地址（远超官方第 1 名 $13,055）却完全不在榜上。
-=> 差异与交易量无关，纯粹是**有没有报名**（`participants` 一千多，其中只有几十个有量；
-没报名的大额地址多是做市/搬砖机器人）。
+实测证据：官方榜**尾部有钱包交易量是 $0.00**（说明官方没有交易量门槛），
+而本地一些交易量远超官方第 1 名的地址却完全不在榜上 → 差异与交易量无关，纯粹是**有没有报名**。
 
-所以本项目 `ONLY_OFFICIAL_WALLETS=1`：`scripts/poll-launchpool.js` 每 60 秒把官方榜
-的报名钱包名单写进 `official_wallet` 表，`refresh-rank.js` 只统计名单内的钱包。
-名单为空时自动降级为不过滤（避免空榜）。
+但官方接口**只公开前 100 名**（`page` / `pageNum` / `pageSize` / `limit+offset` / `cursor` / `top`
+全部被忽略），而且**没有按地址查询的接口**（`my` 字段只认 `accountId`）。
+
+所以本项目**不再按官方名单过滤**。曾经的 `ONLY_OFFICIAL_WALLETS=1`（把 `official_wallet`
+当白名单）**已废弃** —— 那份名单只有 322 个地址，会把 800+ 个真实参与者里的绝大多数误判成
+「未交易 / 未上榜」（实测白名单口径只剩 299 个钱包 / $1.64M，放开后是 763 个 / $5.56M）。
+
+现在的排行口径 = 统计窗口 + 有效币对 + **官方计分的成交**（判据见下节），所有钱包一视同仁。
+要拿准确名次，看批量查询里的「🌐 拉官网」列 —— 那是拿你的 `accountId` 直查官方接口。
 
 ### 奖励规则（与 bank 的差异）
 
@@ -238,14 +245,58 @@ node scripts/recheck-window.js 30    # 指定分钟数
 | `CAMPAIGN_START_UTC` / `CAMPAIGN_END_UTC` | 排行榜统计窗口（UTC，留空 = 不限制） |
 | `VALID_QUOTE_SYMBOLS` | 有效币对（XDP 主要是 USDC / ETH；留空 = 全算） |
 | `REQUIRE_OKX_ROUTE` | 1 = 只统计经 OKX 路由的成交（**默认 1**，与官方活动口径一致） |
-| `ONLY_OFFICIAL_WALLETS` | 1 = 只统计**官方榜已报名钱包**（**默认 1**，排除没报名的做市/搬砖） |
+| `CLASSIFY_ROUTES_ON_SAVE` | 入库前顺带判路由（`REQUIRE_OKX_ROUTE=1` 时自动开） |
+| `INGEST_ONLY_OKX` | **1 = 入库时只留官方计分的成交**（**默认 1**）。明确判为「非 OKX 路由」的直接丢；判不出来（NULL）的保留，留给 `scan-routers` 补判 |
+| `INGEST_DROP_ORDER_SWAP` | **1 = 连「订单式成交」也丢**（**默认 1**）。判据见下节 |
 | `OKX_ROUTERS` | OKX 路由合约地址（Base 实测：`0x67d03631fe51b741c0c00c4e16eb662ac84381df`） |
+| `DEX_METHOD_SWAP_TO` / `DEX_METHOD_BY_ORDER` | 两个函数选择器：`0x0c307f76`（dagSwapTo，官方认）/ `0xf2c42696`（dagSwapByOrderId，官方不算） |
 | `BLACKLIST_WALLETS` | 黑名单钱包，逗号分隔，**改动后无需重启**（默认 60s 内生效） |
 | `CHAIN_RPC_URL` | 链上路径的 RPC（可逗号分隔多个，自动轮换） |
 | `CHAIN_RPC_FALLBACKS` | 备用 RPC（主节点失败时轮换到这里） |
 | `RPC_CONCURRENCY` / `RPC_BATCH_SIZE` | 批量查询的并发与批量大小 |
 | `ROUTER_USE_OKX_API` | **0（默认）**=路由判定走公共 RPC（免费）；1=走 OKX Explorer 接口（**已收费**） |
 | `OKX_402_COOLDOWN_MS` | 命中 402 付费墙后的冷却时间（默认 10 分钟） |
+
+### ★ 入库过滤判据：MethodID（不是笔数、不是金额）
+
+`tx.to` 都是同一个 OKX 路由，**只差调用的函数**：
+
+| MethodID | 签名 | 笔数 | 钱包 | 成交额 | **官网前 100 用它** |
+| --- | --- | --- | --- | --- | --- |
+| `0x0c307f76` | `dagSwapTo` | 14,243 | 890 | $3,002,363 | **99 / 100** |
+| `0xf2c42696` | `dagSwapByOrderId` | 13,341 | **62** | **$3,767,922** | **0 / 100** |
+
+- `dagSwapTo` = 普通兑换（自己指定收款地址）→ **官方活动认这个**
+- `dagSwapByOrderId` = **按订单号成交**（订单式 / 做市 API 路径）→ **官方一封都不算**
+
+覆盖率 **100%**：`is_okx=1` 的成交全部能查到 `method_id`（`okx_route` 表缓存）。
+签名由 4byte 解出，也与 calldata 形状吻合（`dagSwapTo` 4320 字节、带原生币哨兵 + 大签名块；
+`dagSwapByOrderId` 992 字节、标准参数）。
+
+**两条写入路径都要过滤**（这是踩过的坑，见根 README 第 11 节 B1）：
+
+| 路径 | 入口 | 过滤在哪 |
+| --- | --- | --- |
+| WS / REST | `src/save.js` 第 2.4 步 | `okxMap.get(txHash)` → `{ okx, methodId }` |
+| 链上直采 | `src/onchain.js` 的 `ingestOnchain()` —— ⚠️ **它有自己的 INSERT，绕过 save.js** | `isDroppedSwap(tx)`（且**连回执都不再取**，省一半 RPC） |
+
+效果（实测）：`丢非OKX 124 笔 / 丢订单式 13 笔 / 保留 OKX 17 笔（丢弃率 89%）`，
+整库从 **423 MB 降到 46.9 MB**。
+
+> ⚠️ 改完代码**必须 restart**。曾经有个后台 `full-rescan.js` 用旧代码跑了 14 分钟没人知道，
+> 一边塞垃圾一边抢 RPC 把实时通道打出一片 429 —— 现在它带**单实例锁** `.rescan.lock`。
+
+### 净化口径（看板用）
+
+看板的「净化排名 / 净化总交易量」= **只算 `dagSwapTo`**、把 `dagSwapByOrderId` 剔出去：
+
+| 口径 | 本地 | 官方 | 比值 |
+| --- | --- | --- | --- |
+| 全部 `is_okx=1` | $6,767,653 | $2,864,433 | **232%** ❌ 误导 |
+| **净化口径** | **$3,002,363** | $2,864,433 | **104.82%** ✅ |
+
+残余的 4.82% 是「没报名的正常散户」（画像正常、笔数正常，只是没报名），
+官方只公开前 100、拿不到完整名单，**压不下去**。所以：**本地榜的单个钱包名次不能当官方名次用**。
 
 ### 黑名单热更新
 
