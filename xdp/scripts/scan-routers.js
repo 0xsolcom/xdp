@@ -6,7 +6,7 @@
 import { pool } from '../src/db.js';
 import { fetchTxMulti } from '../src/okx.js';
 import { rpcBatch } from '../src/rpc.js';
-import { CHAIN_INDEX, TOKEN_ADDRESS, WIN_START_SQL, WIN_END_SQL, isOkxTx, OKX_ROUTERS, OKX_METHOD_IDS, INGEST_ONLY_OKX } from '../src/config.js';
+import { CHAIN_INDEX, TOKEN_ADDRESS, WIN_START_SQL, WIN_END_SQL, isOkxTx, OKX_ROUTERS, OKX_METHOD_IDS, INGEST_ONLY_OKX, INGEST_DROP_ORDER_SWAP, DEX_METHOD_BY_ORDER } from '../src/config.js';
 import axios from 'axios';
 
 const USE_OKX_API = String(process.env.ROUTER_USE_OKX_API ?? '1') !== '0';
@@ -62,14 +62,21 @@ export async function scanRouters({ verbose = true, max = 0 } = {}) {
         'WHERE t.is_okx IS NULL AND r.is_okx = 1 AND t.chain_index = ? AND t.token_address = ?',
         [CHAIN_INDEX, TOKEN_ADDRESS]
       );
-      // 清掉所有「非 OKX」的行：既包括刚判明是 0 的 NULL 行，
-      // 也包括历史遗留的 is_okx=0 行（旧的兜底逻辑把它们标 0 留下来了）。
-      // 入库过滤开着的时候，这类行本来就不该存在。
+      // 清掉所有「官方不计分」的行：
+      //   ① is_okx = 0（非 OKX 路由，含旧的兜底逻辑标 0 留下来的）
+      //   ② r.is_okx = 0 且 t.is_okx IS NULL（刚判明非 OKX）
+      //   ③ ★ method = dagSwapByOrderId 的行 —— 关键的一条：
+      //      入库那一刻节点没返回 → 按设计存成 NULL → 这里才补判出来，
+      //      走的是 SET is_okx = 1，**绕过了 save.js 的 method 过滤**。
+      //      实测就是这样漏进 84 笔（全是 source='ws'）。
+      // 只删「订单式」那一类，dagSwapTo 的行一根汗毛都不动。
+      const orderCond = INGEST_DROP_ORDER_SWAP ? ' OR (r.method_id = ? AND (t.is_okx IS NULL OR t.is_okx = 1))' : '';
+      const orderParams = INGEST_DROP_ORDER_SWAP ? [DEX_METHOD_BY_ORDER] : [];
       const [h0] = await pool.query(
         'DELETE t FROM trades t LEFT JOIN okx_route r ON r.tx_hash = t.tx_hash ' +
         'WHERE t.chain_index = ? AND t.token_address = ? ' +
-        '  AND (t.is_okx = 0 OR (t.is_okx IS NULL AND r.is_okx = 0))',
-        [CHAIN_INDEX, TOKEN_ADDRESS]
+        '  AND (t.is_okx = 0 OR (t.is_okx IS NULL AND r.is_okx = 0)' + orderCond + ')',
+        [CHAIN_INDEX, TOKEN_ADDRESS, ...orderParams]
       );
       healed = h1.affectedRows || 0;
       if (h0.affectedRows) {
