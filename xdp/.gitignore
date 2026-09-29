@@ -1,0 +1,7 @@
+node_modules/
+.npm-cache/
+.env
+logs/
+*.log
+.rescan.lock
+.rescan-state.json

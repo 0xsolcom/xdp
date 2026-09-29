@@ -1,0 +1,37 @@
+{
+  "name": "okx-xdp-crawler",
+  "version": "1.1.0",
+  "private": true,
+  "type": "module",
+  "description": "XDP (Doppler Finance) on Base —— OKX DEX 交易量采集 + 排行榜",
+  "scripts": {
+    "start": "node src/index.js",
+    "stop": "bash stop.sh",
+    "restart": "bash stop.sh; sleep 1; bash start.sh",
+    "logs": "tail -f logs/index.log",
+    "logs:chain": "tail -f logs/index.log | grep 链上",
+    "realtime": "node src/realtime.js",
+    "backfill": "node src/backfill.js",
+    "recheck": "node scripts/recheck-window.js",
+    "initdb": "node scripts/init-db.js",
+    "rank:refresh": "node scripts/refresh-rank.js",
+    "scan:contracts": "node scripts/scan-contracts.js",
+    "scan:routers": "node scripts/scan-routers.js",
+    "scan:routers:discover": "node scripts/find-okx-routers.js",
+    "scan:onchain": "node scripts/scan-onchain.js",
+    "poll:launchpool": "node scripts/poll-launchpool.js",
+    "reconcile": "node scripts/reconcile-official.js",
+    "status": "node scripts/status.js",
+    "rescan": "node scripts/full-rescan.js",
+    "rescan:rest": "node scripts/full-rescan.js --with-rest",
+    "rescan:resume": "node scripts/full-rescan.js --resume"
+  },
+  "dependencies": {
+    "axios": "^1.7.7",
+    "dotenv": "^16.4.5",
+    "mysql2": "^3.11.3",
+    "node-cron": "^3.0.0",
+    "php-wasm": "^0.1.0",
+    "ws": "^8.22.0"
+  }
+}

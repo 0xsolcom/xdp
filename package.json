@@ -1,0 +1,25 @@
+{
+  "name": "okx-trade",
+  "version": "1.1.0",
+  "private": true,
+  "type": "module",
+  "description": "OKX Web3 DEX 批量交易 —— 纯 Node，一买一卖 + 原子来回 + 批量报告",
+  "scripts": {
+    "trade": "node bin/trade.js",
+    "trade:execute": "node bin/trade.js --execute --yes",
+    "trade:fast": "node bin/trade.js --fast",
+    "trade:fast:exec": "node bin/trade.js --fast --execute --yes",
+    "trade:approve": "node bin/trade.js --approve-only",
+    "trade:approve:exec": "node bin/trade.js --approve-only --execute --yes",
+    "trade:sweep": "node bin/trade.js --sweep-only",
+    "trade:sweep:exec": "node bin/trade.js --sweep-only --execute --yes",
+    "trade:par": "node bin/trade.js --fast --concurrency 5 --sleep auto",
+    "trade:par:exec": "node bin/trade.js --fast --concurrency 5 --sleep auto --execute --yes",
+    "trade:status": "node bin/trade.js --status",
+    "trade:reset": "node bin/trade.js --reset",
+    "trade:report": "open reports/trade-latest.html"
+  },
+  "dependencies": {
+    "ethers": "^6.17.0"
+  }
+}

@@ -1,0 +1,37 @@
+# 依赖
+node_modules/
+
+# 环境配置（.env.example 是模板，继续入库）
+.env
+
+# 私钥
+key.env
+key*.env
+*.key
+k.txt
+*.txt
+
+# 会话凭据（含 x-fptoken，等价于已登录设备凭据）—— 绝不入库
+creds/
+
+# 数据台页面 xdp/web/ —— ⚠️ xdp.php 里含明文数据库密码 / OKX API 密钥 / 磨损上报令牌，
+# 整个目录排除，绝不入库。部署时单独 scp 到服务器。
+xdp/web/
+
+# 报告输出
+reports/
+
+# 日志 / 抓包
+logs/
+*.log
+*.har
+
+# npm 临时缓存
+.npm-cache/
+.npmtmp/
+
+# macOS
+.DS_Store
+.ssh/
+*.pem
+id_ed25519*
