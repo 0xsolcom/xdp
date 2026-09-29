@@ -88,6 +88,8 @@ CREATE TABLE IF NOT EXISTS rank_meta (
   sell_volume   DECIMAL(30,10) NOT NULL DEFAULT 0,
   first_trade_at DATETIME DEFAULT NULL,
   last_trade_at DATETIME DEFAULT NULL,
+  -- 采集器版本（由 refresh-rank.js 写入）—— 看板从它读采集器版本，避免任何文件依赖
+  collector_version VARCHAR(16) DEFAULT NULL,
   updated_at    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (chain_index, token_address, win_start, win_end)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci

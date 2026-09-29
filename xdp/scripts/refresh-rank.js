@@ -8,7 +8,11 @@
 //
 // 口径（与 web/xdp.php 完全一致，统一来自 src/config.js 的 rankWhereSql）：
 //   统计窗口 + 有效币对 + 排除合约地址 +（可选）只保留 OKX 路由
+import { readFileSync } from 'node:fs';
 import { pool } from '../src/db.js';
+
+// 采集器版本：看板会从 rank_meta.collector_version 读它（这样看板不需要任何文件依赖）
+const VERSION = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
 import {
   CHAIN_INDEX, TOKEN_ADDRESS, WIN_START_SQL, WIN_END_SQL, rankWhereSql,
 } from '../src/config.js';
@@ -76,12 +80,12 @@ export async function refreshRank({ verbose = true } = {}) {
       );
     }
     await conn.query(
-      'INSERT INTO rank_meta (chain_index, token_address, win_start, win_end, wallet_count, tx_count, volume_usd, buy_volume, sell_volume, first_trade_at, last_trade_at, updated_at) ' +
-      'VALUES (?,?,?,?,?,?,?,?,?,?,?,NOW()) ' +
+      'INSERT INTO rank_meta (chain_index, token_address, win_start, win_end, wallet_count, tx_count, volume_usd, buy_volume, sell_volume, first_trade_at, last_trade_at, collector_version, updated_at) ' +
+      'VALUES (?,?,?,?,?,?,?,?,?,?,?,?,NOW()) ' +
       'ON DUPLICATE KEY UPDATE wallet_count=VALUES(wallet_count), tx_count=VALUES(tx_count), volume_usd=VALUES(volume_usd), ' +
       'buy_volume=VALUES(buy_volume), sell_volume=VALUES(sell_volume), first_trade_at=VALUES(first_trade_at), ' +
-      'last_trade_at=VALUES(last_trade_at), updated_at=NOW()',
-      [CHAIN_INDEX, TOKEN_ADDRESS, WIN_START_SQL, WIN_END_SQL, rank, tx, vol, buyVol, sellVol, first, last]
+      'last_trade_at=VALUES(last_trade_at), collector_version=VALUES(collector_version), updated_at=NOW()',
+      [CHAIN_INDEX, TOKEN_ADDRESS, WIN_START_SQL, WIN_END_SQL, rank, tx, vol, buyVol, sellVol, first, last, VERSION]
     );
     await conn.commit();
   } catch (e) {
