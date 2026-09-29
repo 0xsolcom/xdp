@@ -698,8 +698,10 @@ mysql -e "SELECT source,is_okx,COUNT(*) FROM trades GROUP BY 1,2"      # 库里�
 git check-ignore -v .env key.env creds/ reports/ xdp/web/ xdp/.env
 # 2) 全仓扫密钥 —— ⚠️ 关键字从 .env 里现读，绝不把凭据写进文档
 SECRETS=$(grep -hE '^(DB_PASSWORD|OKX_API_KEY|OKX_SECRET_KEY|COST_INGEST_TOKEN)=' .env xdp/.env 2>/dev/null \
-  | cut -d= -f2 | grep -v '^$' | tr '\n' '|' | sed 's/|$//')   # 注意 macOS 的 BSD paste 不认 -d'|'
-git ls-files --others --exclude-standard | xargs grep -lnE "$SECRETS|BEGIN (RSA|OPENSSH|EC) PRIVATE KEY" 2>/dev/null
+  | cut -d= -f2 | grep -v '^$' | tr '\n' '|' | sed 's/|$//')   # macOS 的 BSD paste 不认 -d'|'
+FILES=$(git ls-files -co --exclude-standard)          # 已跟踪 + 待新增
+[ -n "$FILES" ] && echo "$FILES" | tr '\n' '\0' \
+  | xargs -0 grep -lnE "$SECRETS|BEGIN (RSA|OPENSSH|EC) PRIVATE KEY" 2>/dev/null; true
 # 3) 看真正会被提交的清单
 git add -A --dry-run | sort
 ```
