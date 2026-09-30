@@ -171,6 +171,17 @@ const STATUS_ONLY = hasFlag('status', 'STATUS');
 const RESET = hasFlag('reset', 'RESET');
 const RETRY_OK = hasFlag('retry-ok', 'RETRY_OK');
 const NO_RESUME = hasFlag('no-resume', 'NO_RESUME');
+// ── 整批循环（--cycle）──
+//   --loop  = 同一钱包来回几轮（钱包内）
+//   --cycle = 整批（全部钱包）跑完再来一遍（钱包组外）；单钱包总来回数 = LOOP × CYCLE
+//   注意用 Number.isFinite 兜底：Math.max(1, Number('abc')) 会得到 NaN，
+//   那样 `for (c = 1; c <= NaN; c++)` 一次都不跑 —— 打错字会静默什么都不做。
+const CYCLE = (function () {
+  const n = Math.floor(Number(argEnv('cycle', '1', 'CYCLE')));
+  return Number.isFinite(n) && n > 1 ? n : 1;
+})();
+// 两遍之间休息：空 = 0（立刻下一遍）/ 数字 = 秒 / auto = 按历史单钱包耗时 ÷ 并发
+const CYCLE_SLEEP_ARG = String(argEnv('cycle-sleep', '', 'CYCLE_SLEEP')).trim();
 const REPORT_DIR = pathArg('report-dir', 'REPORT_DIR')
   ? userPath(pathArg('report-dir', 'REPORT_DIR')) : inRoot('reports');
 const DO_EXECUTE = hasFlag('execute', 'EXECUTE');
@@ -187,6 +198,7 @@ function usage() {
     '  node bin/trade.js --fast --loop 3 --execute --yes  # 原子来回，每钱包 3 轮',
     '  node bin/trade.js --approve-only --execute --yes   # 只做无限授权',
     '  node bin/trade.js --sweep-only --execute --yes     # 只清残留',
+    '  node bin/trade.js --wallets 1-10 --amount 10 --cycle 3 --execute --yes   # 整批跑 3 遍',
     '  node bin/trade.js --concurrency 5 --sleep 2 --execute --yes   # 5 个钱包并发',
     '  node bin/trade.js --status                        # 看断点续跑进度',
     '',
@@ -201,6 +213,8 @@ function usage() {
     '模式',
     '  --fast                原子来回：买/卖 calldata 备好，nonce=N/N+1 背靠背广播',
     '  --loop <n>            同一钱包来回 n 轮（默认 1）                        .env: LOOP',
+    '  --cycle <n>           整批（全部钱包）跑完再来 n 遍（默认 1）           .env: CYCLE',
+    '  --cycle-sleep <秒|auto>  两遍之间休息多久（默认 0 = 立刻开始下一遍）  .env: CYCLE_SLEEP',
     '  --approve-only        只做一次性无限授权（配合 --token usdt,bank）       .env: APPROVE_ONLY',
     '  --sweep-only          只清残留（把交易币全部卖回计价币）                 .env: SWEEP_ONLY',
     '  --token <list>        approve-only 的币，逗号分隔（默认 quote,trade）     .env: APPROVE_TOKEN',
@@ -498,7 +512,7 @@ async function main() {
     runId: 'trade-' + new Date().toISOString().replace(/[^0-9]/g, '').slice(0, 14) + '-' + crypto.randomBytes(3).toString('hex'),
     startedAt: '', mode: '', chain: CHAIN, amount: AMOUNT + ' ' + quoteMeta.symbol, session: SESSION_FILE, rpc: rpcUrl,
   };
-  const rows = [];
+  let rows = [];     // 每一遍（--cycle）重建一次，报告按遍独立
   const state = NO_RESUME ? { version: 1, wallets: {} } : loadState();
   const wallStart = Date.now();
 
@@ -515,6 +529,13 @@ async function main() {
     }
     return Math.max(0, INTERVAL);
   }
+  // 两遍之间休息几秒：空=0 立刻开始；数字=秒；auto=沿用 --sleep 的推算
+  const cycleGapSec = () => {
+    if (!CYCLE_SLEEP_ARG) return 0;
+    if (CYCLE_SLEEP_ARG.toLowerCase() === 'auto') return gapSec();
+    const v = Number(CYCLE_SLEEP_ARG);
+    return Number.isFinite(v) && v >= 0 ? v : 0;
+  };
   const concNote = () => (CONCURRENCY > 1
     ? '   并发 ' + CONCURRENCY + '   启动间隔 ' + gapSec() + 's' + (SLEEP_ARG.toLowerCase() === 'auto' ? '(auto)' : '') + '   接口闸门 ' + GATE_MS + 'ms'
     : '');
@@ -530,9 +551,9 @@ async function main() {
   const tailSleep = async (n, total) => {
     if (CONCURRENCY === 1 && n < total && INTERVAL > 0) await sleep(INTERVAL * 1000);
   };
-  const finishConcurrency = () => {
+  const finishConcurrency = (t0) => {
     if (CONCURRENCY <= 1) return;
-    const wallSec = (Date.now() - wallStart) / 1000;
+    const wallSec = (Date.now() - (t0 || wallStart)) / 1000;
     const sumSec = rows.reduce((s, r) => s + (Number(r.seconds) || 0), 0);
     log('并发 ' + CONCURRENCY + '   墙钟 ' + wallSec.toFixed(1) + 's   钱包耗时合计 ' + sumSec.toFixed(1) + 's   平均占用 ' + (wallSec > 0 ? (sumSec / wallSec).toFixed(2) : '0') + ' 位');
     if (wallSec > 0 && sumSec / wallSec < CONCURRENCY * 0.8) warn('并发位没用满：瓶颈多半是 --sleep ' + gapSec() + 's 或接口闸门，可调小后再试');
@@ -646,10 +667,26 @@ async function main() {
     rows.push({ index: s.index, address: s.address, ok: 0, stage: 'skipped', dry: DO_EXECUTE ? 0 : 1, direction: quoteMeta.symbol + '→' + tradeMeta.symbol, seconds: 0, error: s.reason });
   }
 
-  /* ───────────────── 主循环 ───────────────── */
+  /* ───────────────── 主循环（--cycle 把整批跑 n 遍）───────────────── */
   const total = planned.length;
   if (FAST) log('模式：原子来回（--fast）');
-  log('开始 ' + total + ' 个钱包' + (LOOP > 1 ? '（每个 ' + LOOP + ' 轮）' : '') + concNote());
+  log('开始 ' + total + ' 个钱包' + (LOOP > 1 ? '（每个 ' + LOOP + ' 轮）' : '') +
+      (CYCLE > 1 ? '，整批 ' + CYCLE + ' 遍' : '') + concNote());
+
+  const baseRunId = runMeta.runId;
+  const preRows = rows.slice();     // 前置检查跳过的行，每遍的报告都带上
+  for (let c = 1; c <= CYCLE; c++) {
+    if (CYCLE > 1) {
+      log('');
+      log('══════ 第 ' + c + '/' + CYCLE + ' 遍   ' + total + ' 个钱包' +
+          (LOOP > 1 ? ' × ' + LOOP + ' 轮' : '') + ' ══════');
+    }
+    // 每遍都是独立一次上报 —— runId 必须不同，否则服务端 (run_id, 钱包) 的幂等
+    // 会把第 2 遍起同一钱包的成本当成「已存在」直接丢掉，磨损就少记了。
+    rows = preRows.slice();
+    runMeta.runId = (CYCLE > 1) ? (baseRunId + '-c' + c) : baseRunId;
+    const cycleStart = Date.now();
+
   await runMode(planned, async (w, n) => {
     const address = w.wallet.address;
     say(line('━'));
@@ -729,18 +766,28 @@ async function main() {
     }
     await tailSleep(n, total);
   });
-  finishConcurrency();
+    finishConcurrency(cycleStart);
 
-  runMeta.mode = DO_EXECUTE ? (FAST ? '真实原子来回' : '真实交易') : '干跑';
-  finishReport(rows, runMeta, (rep) => {
-    const s = rep.summary;
-    console.log('');
-    console.log(DO_EXECUTE ? '📄 一买一卖报告:' : '📄 报告（干跑，金额列为空）:');
-    if (DO_EXECUTE) {
-      console.log('   总投入 ' + s.spent.toFixed(6) + ' ｜ 总回收 ' + s.recv.toFixed(6) + ' ｜ 磨损 ' + s.cost.toFixed(6) + (s.costBps == null ? '' : '（' + s.costBps.toFixed(2) + ' bps）'));
-      console.log('   gas ' + s.gasBnb.toFixed(8) + ' ' + gsym + ' ｜ 成功 ' + s.ok + ' / ' + s.total + ' ｜ 未清残留 ' + s.residualWallets);
+    const cycTag = (CYCLE > 1) ? ('（第 ' + c + '/' + CYCLE + ' 遍）') : '';
+    runMeta.mode = DO_EXECUTE ? (FAST ? '真实原子来回' : '真实交易') : '干跑';
+    finishReport(rows, runMeta, (rep) => {
+      const s = rep.summary;
+      console.log('');
+      console.log(DO_EXECUTE ? ('📄 一买一卖报告' + cycTag + ':') : ('📄 报告（干跑，金额列为空）' + cycTag + ':'));
+      if (DO_EXECUTE) {
+        console.log('   总投入 ' + s.spent.toFixed(6) + ' ｜ 总回收 ' + s.recv.toFixed(6) + ' ｜ 磨损 ' + s.cost.toFixed(6) + (s.costBps == null ? '' : '（' + s.costBps.toFixed(2) + ' bps）'));
+        console.log('   gas ' + s.gasBnb.toFixed(8) + ' ' + gsym + ' ｜ 成功 ' + s.ok + ' / ' + s.total + ' ｜ 未清残留 ' + s.residualWallets);
+      }
+    });
+
+    if (c < CYCLE) {
+      const gap = cycleGapSec();
+      log('');
+      log('第 ' + c + '/' + CYCLE + ' 遍完成，' + (gap > 0 ? '休息 ' + gap + 's 后' : '立刻') + '开始第 ' + (c + 1) + ' 遍…');
+      if (gap > 0) await sleep(gap * 1000);
     }
-  });
+  }
+  if (CYCLE > 1) { log(''); log('✅ 整批 ' + CYCLE + ' 遍执行完毕'); }
 }
 
 main().catch((e) => die(e.stack || e.message));

@@ -263,7 +263,9 @@ xdp
 | 参数 | 说明 |
 |---|---|
 | `--fast` | 原子来回：买/卖 calldata 备好，nonce N / N+1 背靠背广播 |
-| `--loop n` | 同一钱包来回 n 轮（默认 1） |
+| `--loop n` | **同一钱包**来回 n 轮（默认 1） |
+| `--cycle n` | **整批（全部钱包）**跑完再来 n 遍（默认 1）；单钱包总来回 = `--loop` × `--cycle` |
+| `--cycle-sleep 秒\|auto` | 两遍之间休息多久（默认 0 = 立刻开始下一遍；`auto` 沿用 `--sleep` 的推算） |
 | `--approve-only` | 只做一次性无限授权 |
 | `--sweep-only` | 只清残留 |
 | `--token LIST` | `--approve-only` 的币（默认 quote,trade） |
